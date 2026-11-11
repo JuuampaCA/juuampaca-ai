@@ -52,103 +52,126 @@ function addMessage(message) {
   );
 }
 
-// Conectar con Twitch EventSub
-async function connectChat(accessToken, userId) {
+// Conectar con el chat del canal seleccionado mediante Twitch EventSub.
+async function connectChat(accessToken, userId, broadcasterId, channelLogin) {
   if (chatSocket) {
     chatSocket.removeAllListeners();
     chatSocket.close();
     chatSocket = null;
   }
-
   clearTimeout(reconnectTimer);
-
-  const socket = new WebSocket(
-    "wss://eventsub.wss.twitch.tv/ws"
-  );
-
+  const socket = new WebSocket("wss://eventsub.wss.twitch.tv/ws");
   chatSocket = socket;
 
-  socket.on("open", () => {
-    console.log("Conectando con Twitch EventSub...");
-  });
-
+  socket.on("open", () => console.log("Conectando con Twitch EventSub..."));
   socket.on("message", async (raw) => {
     try {
       const data = JSON.parse(raw.toString());
       const type = data.metadata.message_type;
-
       if (type === "session_welcome") {
         const sessionId = data.payload.session.id;
-
-        console.log("Sesión EventSub conectada.");
-
-        const response = await fetch(
-          "https://api.twitch.tv/helix/eventsub/subscriptions",
-          {
-            method: "POST",
-            headers: {
-              "Authorization": `Bearer ${accessToken}`,
-              "Client-Id": process.env.TWITCH_CLIENT_ID,
-              "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-              type: "channel.chat.message",
-              version: "1",
-              condition: {
-                broadcaster_user_id: userId,
-                user_id: userId
-              },
-              transport: {
-                method: "websocket",
-                session_id: sessionId
-              }
-            })
-          }
-        );
-
+        const response = await fetch("https://api.twitch.tv/helix/eventsub/subscriptions", {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${accessToken}`,
+            "Client-Id": process.env.TWITCH_CLIENT_ID,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            type: "channel.chat.message",
+            version: "1",
+            condition: { broadcaster_user_id: broadcasterId, user_id: userId },
+            transport: { method: "websocket", session_id: sessionId }
+          })
+        });
         if (!response.ok) {
           const error = await response.text();
           console.error("Error al suscribirse al chat:", error);
           return;
         }
-
-        console.log("¡Escuchando el chat de juuampaca!");
+        console.log("Escuchando el chat de " + channelLogin);
       }
-
-      if (type === "notification") {
-        if (
-          data.metadata.subscription_type === "channel.chat.message"
-        ) {
-          addMessage(data.payload.event);
-        }
+      if (type === "notification" && data.metadata.subscription_type === "channel.chat.message") {
+        const event = data.payload.event;
+        addMessage(event);
+        // La respuesta automática solo se intenta cuando OpenAI y Twitch tienen permisos.
+        maybeRespondToChat(event, channelLogin).catch(err =>
+          console.error("No se pudo preparar/enviar respuesta:", err.message)
+        );
       }
-
       if (type === "session_reconnect") {
-        console.log("Twitch solicita reconectar la sesión.");
+        console.log("Twitch solicita reconectar EventSub; se esperará la reconexión.");
       }
-
-      if (type === "revocation") {
-        console.log("Twitch revocó la suscripción.");
-      }
-
+      if (type === "revocation") console.error("Twitch revocó la suscripción:", data.payload?.subscription?.status);
     } catch (error) {
       console.error("Error procesando mensaje:", error.message);
     }
   });
-
-  socket.on("error", (error) => {
-    console.error("Error WebSocket:", error.message);
-  });
-
+  socket.on("error", error => console.error("Error WebSocket:", error.message));
   socket.on("close", () => {
     console.log("Conexión EventSub cerrada.");
-
-    if (chatAccount && chatAccount.userId === userId) {
+    if (chatAccount && chatAccount.userId === userId && chatAccount.selectedChannel?.id === broadcasterId) {
       reconnectTimer = setTimeout(() => {
-        connectChat(accessToken, userId);
+        connectChat(chatAccount.accessToken, chatAccount.userId, broadcasterId, channelLogin);
       }, 5000);
     }
   });
+}
+
+const lastAutoReplyAt = new Map();
+async function maybeRespondToChat(event, channelLogin) {
+  if (!chatAccount || !process.env.OPENAI_API_KEY) return;
+  if (!chatAccount.accessToken || !chatAccount.scopes?.includes("user:write:chat")) return;
+  if (event.chatter_user_id === chatAccount.userId) return;
+  const text = String(event.message?.text || "").trim();
+  if (!text) return;
+  const channelId = event.broadcaster_user_id;
+  const previous = lastAutoReplyAt.get(channelId) || 0;
+  if (Date.now() - previous < 15000) return;
+  lastAutoReplyAt.set(channelId, Date.now());
+
+  const examples = (styleExamples.get(chatAccount.sessionId) || []).slice(-8)
+    .map((item, index) => (index + 1) + ". " + item).join("\n") || "Sin ejemplos; usa español natural y amable.";
+  const aiResponse = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      "Authorization": "Bearer " + process.env.OPENAI_API_KEY,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      model: process.env.OPENAI_MODEL || "gpt-4.1-mini",
+      instructions: "Eres un asistente de IA que participa de forma transparente en el chat de Twitch. No finjas ser una persona humana ni afirmes ser el dueño de la cuenta. Puedes conversar en español de forma breve, amable y natural. Responde solo si el mensaje invita claramente a conversar, pregunta algo o aporta un tema al que una respuesta aporte valor. Si no conviene responder, devuelve exactamente NO_REPLY. No inventes lo que ocurre en el video: solo conoces los mensajes del chat. No acoses, insultes ni solicites datos privados. Cada respuesta que publiques debe comenzar con [IA].",
+      input: "Canal: " + channelLogin + "\nEjemplos de estilo: " + examples + "\nMensaje de " + event.chatter_user_name + ": " + text,
+      max_output_tokens: 90
+    })
+  });
+  const aiData = await aiResponse.json();
+  if (!aiResponse.ok) {
+    console.error("Error de OpenAI:", aiData.error?.message || aiResponse.status);
+    return;
+  }
+  const draft = String(aiData.output_text || "").trim();
+  if (!draft || draft === "NO_REPLY") return;
+  const message = "[IA] " + draft.replace(/^\[IA\]\s*/i, "").slice(0, 430);
+  const send = await fetch("https://api.twitch.tv/helix/chat/messages", {
+    method: "POST",
+    headers: {
+      "Authorization": "Bearer " + chatAccount.accessToken,
+      "Client-Id": process.env.TWITCH_CLIENT_ID,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      broadcaster_id: channelId,
+      sender_id: chatAccount.userId,
+      message
+    })
+  });
+  if (!send.ok) {
+    const error = await send.text();
+    console.error("Twitch no aceptó el mensaje:", error);
+    return;
+  }
+  console.log("Respuesta IA enviada a #" + channelLogin);
 }
 
 // Renovar el token antes de que expire.
@@ -173,7 +196,7 @@ async function refreshTwitchToken() {
     const delay = Math.max(60_000, ((tokens.expires_in || 14400) - 300) * 1000);
     clearTimeout(tokenRefreshTimer);
     tokenRefreshTimer = setTimeout(refreshTwitchToken, delay);
-    connectChat(chatAccount.accessToken, chatAccount.userId);
+    connectChat(chatAccount.accessToken, chatAccount.userId, chatAccount.selectedChannel.id, chatAccount.selectedChannel.login);
     console.log("Token de Twitch renovado.");
   } catch (error) {
     console.error("No se pudo renovar Twitch:", error.message);
@@ -390,7 +413,7 @@ app.get("/auth/twitch", (req, res) => {
     client_id: TWITCH_CLIENT_ID,
     redirect_uri: TWITCH_REDIRECT_URI,
     response_type: "code",
-    scope: "user:read:chat",
+    scope: "user:read:chat user:write:chat",
     state
   });
 
@@ -462,7 +485,7 @@ app.get("/auth/twitch/callback", async (req, res) => {
       !account.scopes.includes("user:read:chat")
     ) {
       return res.status(403).send(
-        "Falta el permiso user:read:chat. Vuelve a conectar Twitch."
+        "Faltan permisos user:read:chat y user:write:chat. Vuelve a conectar Twitch."
       );
     }
 
@@ -492,7 +515,7 @@ app.get("/auth/twitch/callback", async (req, res) => {
       });
     });
 
-    connectChat(tokens.access_token, account.user_id);
+    // El chat se conecta cuando el usuario elige un canal en el panel.
 
     res.redirect("/");
 
@@ -537,6 +560,9 @@ app.post("/api/select-channel", async (req, res) => {
       login: channel.login,
       displayName: channel.display_name
     };
+    chatAccount.selectedChannel = req.session.selectedChannel;
+    chatAccount.sessionId = req.sessionID;
+    connectChat(chatAccount.accessToken, chatAccount.userId, channel.id, channel.login);
     return res.json({
       channel: req.session.selectedChannel,
       message: "Canal seleccionado. Para leer su chat, el canal debe autorizar la integración de Twitch."
