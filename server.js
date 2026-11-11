@@ -56,9 +56,15 @@ function addMessage(message) {
 // Conectar con el chat del canal seleccionado mediante Twitch EventSub.
 async function connectChat(accessToken, userId, broadcasterId, channelLogin) {
   if (chatSocket) {
-    chatSocket.removeAllListeners();
-    chatSocket.close();
+    const oldSocket = chatSocket;
     chatSocket = null;
+    oldSocket.removeAllListeners();
+    oldSocket.on("error", () => {});
+    if (oldSocket.readyState === WebSocket.CONNECTING) {
+      oldSocket.terminate();
+    } else if (oldSocket.readyState === WebSocket.OPEN) {
+      oldSocket.close();
+    }
   }
   clearTimeout(reconnectTimer);
   const socket = new WebSocket("wss://eventsub.wss.twitch.tv/ws");
@@ -565,7 +571,7 @@ app.post("/api/suggest", async (req, res) => {
     const examples = userExamples.length
       ? userExamples.map((item, index) => (index + 1) + ". " + item).join("\\n")
       : "Todavía no hay ejemplos; usa un tono natural, breve y amistoso.";
-    const response = await fetch("https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(process.env.GEMINI_MODEL || "gemini-2.5-flash") + ":generateContent?key=" + encodeURIComponent(process.env.GEMINI_API_KEY), {
+    const response = await fetch("https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(process.env.GEMINI_MODEL || "gemini-3.8-flash") + ":generateContent?key=" + encodeURIComponent(process.env.GEMINI_API_KEY), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
