@@ -8,7 +8,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.set("trust proxy", 1);
-app.use(express.json());
+app.use(express.json({ limit: "10kb" }));
 
 if (!process.env.SESSION_SECRET) {
   throw new Error("Falta configurar SESSION_SECRET en Render.");
@@ -32,8 +32,9 @@ let chatSocket = null;
 let chatAccount = null;
 let chatMessages = [];
 let reconnectTimer = null;
-const styleExamples = [];
-let lastSuggestionAt = 0;
+const styleExamples = new Map();
+const lastSuggestionAt = new Map();
+let tokenRefreshTimer = null;
 
 function addMessage(message) {
   chatMessages.push({
@@ -148,6 +149,37 @@ async function connectChat(accessToken, userId) {
       }, 5000);
     }
   });
+}
+
+// Renovar el token antes de que expire.
+async function refreshTwitchToken() {
+  if (!chatAccount || !chatAccount.refreshToken) return;
+  try {
+    const body = new URLSearchParams({
+      grant_type: "refresh_token",
+      refresh_token: chatAccount.refreshToken,
+      client_id: process.env.TWITCH_CLIENT_ID,
+      client_secret: process.env.TWITCH_CLIENT_SECRET
+    });
+    const response = await fetch("https://id.twitch.tv/oauth2/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body
+    });
+    if (!response.ok) throw new Error("Twitch rechazó la renovación.");
+    const tokens = await response.json();
+    chatAccount.accessToken = tokens.access_token;
+    chatAccount.refreshToken = tokens.refresh_token || chatAccount.refreshToken;
+    const delay = Math.max(60_000, ((tokens.expires_in || 14400) - 300) * 1000);
+    clearTimeout(tokenRefreshTimer);
+    tokenRefreshTimer = setTimeout(refreshTwitchToken, delay);
+    connectChat(chatAccount.accessToken, chatAccount.userId);
+    console.log("Token de Twitch renovado.");
+  } catch (error) {
+    console.error("No se pudo renovar Twitch:", error.message);
+    clearTimeout(tokenRefreshTimer);
+    tokenRefreshTimer = setTimeout(refreshTwitchToken, 60_000);
+  }
 }
 
 // Página principal
@@ -324,7 +356,7 @@ app.get("/auth/twitch", (req, res) => {
     client_id: TWITCH_CLIENT_ID,
     redirect_uri: TWITCH_REDIRECT_URI,
     response_type: "code",
-    scope: "user:read:chat user:write:chat",
+    scope: "user:read:chat",
     state
   });
 
@@ -407,10 +439,17 @@ app.get("/auth/twitch/callback", async (req, res) => {
 
     chatAccount = {
       login: account.login,
-      userId: account.user_id
+      userId: account.user_id,
+      accessToken: tokens.access_token,
+      refreshToken: tokens.refresh_token
     };
 
     chatMessages = [];
+    clearTimeout(tokenRefreshTimer);
+    tokenRefreshTimer = setTimeout(
+      refreshTwitchToken,
+      Math.max(60_000, ((tokens.expires_in || 14400) - 300) * 1000)
+    );
 
     await new Promise((resolve, reject) => {
       req.session.save((error) => {
@@ -441,9 +480,12 @@ app.post("/api/style-example", (req, res) => {
   if (!example || example.length > 500) {
     return res.status(400).json({ error: "El ejemplo debe tener entre 1 y 500 caracteres." });
   }
-  styleExamples.push(example);
-  if (styleExamples.length > 20) styleExamples.shift();
-  res.json({ ok: true, count: styleExamples.length });
+  const sessionId = req.sessionID;
+  const examples = styleExamples.get(sessionId) || [];
+  examples.push(example);
+  if (examples.length > 20) examples.shift();
+  styleExamples.set(sessionId, examples);
+  res.json({ ok: true, count: examples.length });
 });
 
 // Crear un borrador de respuesta; nunca publica automáticamente en Twitch
@@ -458,15 +500,18 @@ app.post("/api/suggest", async (req, res) => {
   if (!message || message.length > 500) {
     return res.status(400).json({ error: "El mensaje debe tener entre 1 y 500 caracteres." });
   }
+  const sessionId = req.sessionID;
   const now = Date.now();
-  if (now - lastSuggestionAt < 4000) {
+  const previousRequest = lastSuggestionAt.get(sessionId) || 0;
+  if (now - previousRequest < 4000) {
     return res.status(429).json({ error: "Espera unos segundos antes de pedir otro borrador." });
   }
-  lastSuggestionAt = now;
+  lastSuggestionAt.set(sessionId, now);
 
   try {
-    const examples = styleExamples.length
-      ? styleExamples.map((item, index) => (index + 1) + ". " + item).join("\n")
+    const userExamples = styleExamples.get(sessionId) || [];
+    const examples = userExamples.length
+      ? userExamples.map((item, index) => (index + 1) + ". " + item).join("\n")
       : "Todavía no hay ejemplos; usa un tono natural, breve y amistoso.";
     const response = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
