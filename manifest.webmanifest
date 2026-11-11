@@ -1,0 +1,9 @@
+{
+  "name": "JuuampaCA AI",
+  "short_name": "JuuampaCA",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#11111b",
+  "theme_color": "#171326",
+  "description": "Panel móvil prototipo para tu asistente de Twitch."
+}

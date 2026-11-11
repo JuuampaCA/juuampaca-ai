@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#171326">
+<link rel="manifest" href="manifest.webmanifest">
+<title>JuuampaCA AI</title>
+<style>
+:root{color-scheme:dark;--bg:#11111b;--panel:#1d1b2b;--muted:#b7b2c9;--purple:#9146ff;--line:#373249}
+*{box-sizing:border-box}body{margin:0;background:linear-gradient(160deg,#211637,#11111b 55%);color:#f8f5ff;font:16px system-ui,sans-serif}
+main{max-width:680px;margin:auto;padding:20px 15px 38px}.head{display:flex;align-items:center;gap:12px;margin:4px 0 20px}
+.logo{height:48px;width:48px;border-radius:15px;background:var(--purple);display:grid;place-items:center;font-size:25px}
+h1{font-size:22px;margin:0}.sub,.muted{color:var(--muted);font-size:13px;line-height:1.45}
+.card{background:rgba(29,27,43,.97);border:1px solid var(--line);border-radius:17px;padding:17px;margin:13px 0}
+h2{font-size:17px;margin:0 0 8px}.row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 0;border-bottom:1px solid var(--line)}.row:last-child{border:0}
+.switch{appearance:none;width:48px;height:28px;background:#555166;border-radius:30px;position:relative;flex:none;margin:0;cursor:pointer}
+.switch:before{content:"";position:absolute;width:22px;height:22px;left:3px;top:3px;border-radius:50%;background:#fff;transition:.2s}.switch:checked{background:var(--purple)}.switch:checked:before{transform:translateX(20px)}
+input[type=text],textarea{width:100%;background:#11111b;color:#fff;border:1px solid var(--line);border-radius:10px;padding:12px;font:inherit}
+button{border:0;border-radius:10px;padding:11px 14px;background:var(--purple);color:#fff;font-weight:700;cursor:pointer}
+.add{display:grid;grid-template-columns:1fr auto;gap:8px;margin-top:12px}
+ul{list-style:none;padding:0;margin:10px 0 0}li{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--line)}
+.remove{background:#393548;padding:7px 10px;font-size:12px}.pill{display:inline-block;padding:5px 9px;border-radius:30px;background:#382653;color:#e2d3ff;font-size:11px}
+.notice{padding:11px 12px;border-left:3px solid var(--purple);background:#282039;border-radius:8px;font-size:13px;line-height:1.5}
+textarea{min-height:88px;resize:vertical;margin-top:8px}
+footer{text-align:center;color:var(--muted);font-size:12px;padding:15px}
+</style>
+</head>
+<body>
+<main>
+<div class="head"><div class="logo">🎮</div><div><h1>JuuampaCA AI</h1><div class="sub">Asistente de Twitch · Android</div></div></div>
+<section class="card">
+<h2>Controles</h2>
+<div class="row"><div><b>Aprender mi estilo</b><div class="muted">Activa o pausa la recopilación de ejemplos autorizados.</div></div><input class="switch" id="learn" type="checkbox"></div>
+<div class="row"><div><b>Comentarios automáticos</b><div class="muted">En la conexión real se limitará a canales autorizados y reglas de Twitch.</div></div><input class="switch" id="auto" type="checkbox"></div>
+</section>
+<section class="card">
+<h2>Mis canales</h2><div class="muted">Agrega únicamente canales donde quieras participar.</div>
+<div class="add"><input id="channel" type="text" placeholder="Nombre del canal"><button id="add">Agregar</button></div><ul id="channels"><li class="muted">Aún no hay canales agregados.</li></ul>
+</section>
+<section class="card">
+<h2>Ejemplos de mi estilo</h2>
+<div class="muted">Estos ejemplos sirven como guía inicial. En la versión conectada podrás revisar los mensajes antes de usarlos.</div>
+<textarea id="examples">¿Qué onda con el nombre del streamer?
+¿Qué tal va tu día?
+¿Cómo va el juego?
+Ando en el trabajo.
+Te miro a escondidas.
+¿Qué tal el clima por allá?
+¿Cómo andan los rivales?
+¿Ya se ganó el día de hoy?
+Nos vemos la próxima.
+Que pases un lindo día.
+Muy buen stream.</textarea>
+<button id="save" style="margin-top:9px">Guardar ejemplos en este dispositivo</button>
+<div id="saved" class="muted" aria-live="polite"></div>
+</section>
+<section class="card">
+<h2>Conexión con Twitch</h2><span class="pill">Pendiente de configurar</span>
+<p class="muted">Este prototipo todavía no inicia sesión ni publica mensajes en Twitch. Para conectar tu cuenta se necesitará autorización oficial de Twitch y un servicio seguro que gestione los permisos. Nunca escribas aquí tu contraseña ni códigos de acceso.</p>
+<div class="notice">Recomendación: probar primero con sugerencias que tú apruebes. Después se podrá habilitar automatización limitada para los canales que hayas autorizado.</div>
+</section>
+<footer>Prototipo local · JuuampaCA AI</footer>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const channels=[];
+function render(){const ul=$('channels');ul.innerHTML='';if(!channels.length){const li=document.createElement('li');li.className='muted';li.textContent='Aún no hay canales agregados.';ul.append(li);return;}
+channels.forEach((name,i)=>{const li=document.createElement('li');const s=document.createElement('span');s.textContent='@'+name;const b=document.createElement('button');b.className='remove';b.textContent='Quitar';b.onclick=()=>{channels.splice(i,1);render()};li.append(s,b);ul.append(li)})}
+function add(){const v=$('channel').value.trim().replace(/^@/,'');if(!v)return;if(channels.some(x=>x.toLowerCase()===v.toLowerCase()))return;channels.push(v);$('channel').value='';render()}
+$('add').onclick=add;$('channel').addEventListener('keydown',e=>{if(e.key==='Enter')add()});
+$('save').onclick=()=>{$('saved').textContent='Ejemplos guardados en esta sesión del prototipo.'};
+if('serviceWorker' in navigator && location.protocol.startsWith('http'))navigator.serviceWorker.register('./sw.js').catch(()=>{});
+</script>
+</body></html>
