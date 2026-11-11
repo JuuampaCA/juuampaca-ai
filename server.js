@@ -226,7 +226,15 @@ app.get("/", (req, res) => {
       <h1>JuuampaCA AI</h1>
       <p>Asistente de chat de Twitch</p>
       <p id="status">Comprobando conexión...</p>
-      <p><a href="/auth/twitch">Conectar con Twitch</a></p>
+      <p><a href="/auth/twitch">Conectar cuenta de Twitch</a></p>
+      <h2>Elegir directo</h2>
+      <p>Escribe el usuario del canal que quieres comentar. La selección no inicia la lectura del chat: Twitch todavía debe autorizar a la aplicación para ese canal.</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;max-width:600px">
+        <input id="targetChannel" maxlength="25" autocomplete="off" placeholder="Ejemplo: teresita_esmo" style="flex:1;min-width:220px;padding:12px;border-radius:8px;border:1px solid #555;background:#24212e;color:white">
+        <button id="selectChannel">Elegir directo</button>
+      </div>
+      <p id="channelStatus" aria-live="polite"></p>
+      <p id="selectedChannel"></p>
       <h2>Mensajes del chat</h2>
       <p>Modo actual: solo lee el chat de la cuenta Twitch conectada y prepara borradores privados. No publica mensajes ni puede leer otros canales sin los permisos de Twitch correspondientes.</p>
       <div id="messages">Esperando mensajes...</div>
@@ -304,6 +312,32 @@ app.get("/", (req, res) => {
             panel.textContent = error.message;
           }
         }
+
+        document.getElementById("selectChannel").addEventListener("click", async () => {
+          const field = document.getElementById("targetChannel");
+          const status = document.getElementById("channelStatus");
+          const selected = document.getElementById("selectedChannel");
+          const login = field.value.trim().replace(/^@/, "").toLowerCase();
+          selected.textContent = "";
+          if (!/^[a-z0-9_]{4,25}$/.test(login)) {
+            status.textContent = "Escribe un usuario de Twitch válido.";
+            return;
+          }
+          status.textContent = "Buscando canal...";
+          try {
+            const response = await fetch("/api/select-channel", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ login })
+            });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error || "No se pudo seleccionar el canal.");
+            status.textContent = data.message;
+            selected.textContent = "Canal elegido: " + data.channel.displayName + " (@" + data.channel.login + ")";
+          } catch (error) {
+            status.textContent = error.message;
+          }
+        });
 
         document.getElementById("saveStyle").addEventListener("click", async () => {
           const field = document.getElementById("styleExample");
@@ -471,6 +505,48 @@ app.get("/auth/twitch/callback", async (req, res) => {
 });
 
 
+// Seleccionar un canal objetivo. Esto NO suscribe al chat ni concede permisos.
+app.post("/api/select-channel", async (req, res) => {
+  if (!req.session.twitch || !chatAccount) {
+    return res.status(401).json({ error: "Conecta primero tu cuenta de Twitch." });
+  }
+  const login = typeof req.body.login === "string"
+    ? req.body.login.trim().replace(/^@/, "").toLowerCase()
+    : "";
+  if (!/^[a-z0-9_]{4,25}$/.test(login)) {
+    return res.status(400).json({ error: "El usuario del canal no tiene un formato válido." });
+  }
+  try {
+    const response = await fetch("https://api.twitch.tv/helix/users?login=" + encodeURIComponent(login), {
+      headers: {
+        "Authorization": "Bearer " + chatAccount.accessToken,
+        "Client-Id": process.env.TWITCH_CLIENT_ID
+      }
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      console.error("Error buscando canal Twitch:", response.status);
+      return res.status(502).json({ error: "Twitch no pudo buscar ese canal. Vuelve a conectar la cuenta." });
+    }
+    const channel = data.data && data.data[0];
+    if (!channel) {
+      return res.status(404).json({ error: "No encontré ese canal de Twitch." });
+    }
+    req.session.selectedChannel = {
+      id: channel.id,
+      login: channel.login,
+      displayName: channel.display_name
+    };
+    return res.json({
+      channel: req.session.selectedChannel,
+      message: "Canal seleccionado. Para leer su chat, el canal debe autorizar la integración de Twitch."
+    });
+  } catch (error) {
+    console.error("Error seleccionando canal:", error.message);
+    return res.status(502).json({ error: "No se pudo consultar Twitch en este momento." });
+  }
+});
+
 // Guardar ejemplos de estilo escritos por el usuario (memoria temporal del servidor)
 app.post("/api/style-example", (req, res) => {
   if (!req.session.twitch) {
@@ -560,6 +636,7 @@ app.get("/api/messages", (req, res) => {
   res.json({
     connected: true,
     account: req.session.twitch.login,
+    selectedChannel: req.session.selectedChannel || null,
     messages: chatMessages
   });
 });
