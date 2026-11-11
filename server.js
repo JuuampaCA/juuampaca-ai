@@ -31,6 +31,7 @@ app.use(session({
 let chatSocket = null;
 let chatAccount = null;
 let chatMessages = [];
+let chatConnectionStatus = "Conecta Twitch y elige un canal.";
 let reconnectTimer = null;
 const styleExamples = new Map();
 const lastSuggestionAt = new Map();
@@ -63,7 +64,7 @@ async function connectChat(accessToken, userId, broadcasterId, channelLogin) {
   const socket = new WebSocket("wss://eventsub.wss.twitch.tv/ws");
   chatSocket = socket;
 
-  socket.on("open", () => console.log("Conectando con Twitch EventSub..."));
+  socket.on("open", () => { chatConnectionStatus = "Conectando con Twitch..."; console.log("Conectando con Twitch EventSub..."); });
   socket.on("message", async (raw) => {
     try {
       const data = JSON.parse(raw.toString());
@@ -86,9 +87,11 @@ async function connectChat(accessToken, userId, broadcasterId, channelLogin) {
         });
         if (!response.ok) {
           const error = await response.text();
+          chatConnectionStatus = "Twitch no autorizó la lectura del chat (" + response.status + "). " + error.slice(0, 220);
           console.error("Error al suscribirse al chat:", error);
           return;
         }
+        chatConnectionStatus = "Leyendo el chat de @" + channelLogin + ". La IA responderá con el prefijo [IA] cuando tenga créditos de API.";
         console.log("Escuchando el chat de " + channelLogin);
       }
       if (type === "notification" && data.metadata.subscription_type === "channel.chat.message") {
@@ -109,6 +112,7 @@ async function connectChat(accessToken, userId, broadcasterId, channelLogin) {
   });
   socket.on("error", error => console.error("Error WebSocket:", error.message));
   socket.on("close", () => {
+    chatConnectionStatus = "Conexión con Twitch cerrada. Intentando reconectar...";
     console.log("Conexión EventSub cerrada.");
     if (chatAccount && chatAccount.userId === userId && chatAccount.selectedChannel?.id === broadcasterId) {
       reconnectTimer = setTimeout(() => {
@@ -258,6 +262,7 @@ app.get("/", (req, res) => {
       </div>
       <p id="channelStatus" aria-live="polite"></p>
       <p id="selectedChannel"></p>
+      <p id="chatStatus" aria-live="polite">Conecta Twitch y elige un canal.</p>
       <h2>Mensajes del chat</h2>
       <p>Modo actual: solo lee el chat de la cuenta Twitch conectada y prepara borradores privados. No publica mensajes ni puede leer otros canales sin los permisos de Twitch correspondientes.</p>
       <div id="messages">Esperando mensajes...</div>
@@ -285,6 +290,7 @@ app.get("/", (req, res) => {
               data.connected
                 ? "Conectado a Twitch: " + data.account
                 : "Chat desconectado";
+            document.getElementById("chatStatus").textContent = data.chatStatus || "Sin estado del chat.";
 
             const container = document.getElementById("messages");
             container.replaceChildren();
@@ -357,6 +363,7 @@ app.get("/", (req, res) => {
             if (!response.ok) throw new Error(data.error || "No se pudo seleccionar el canal.");
             status.textContent = data.message;
             selected.textContent = "Canal elegido: " + data.channel.displayName + " (@" + data.channel.login + ")";
+            document.getElementById("chatStatus").textContent = "Solicitando acceso al chat de @" + data.channel.login + "...";
           } catch (error) {
             status.textContent = error.message;
           }
@@ -498,10 +505,12 @@ app.get("/auth/twitch/callback", async (req, res) => {
       login: account.login,
       userId: account.user_id,
       accessToken: tokens.access_token,
-      refreshToken: tokens.refresh_token
+      refreshToken: tokens.refresh_token,
+      scopes: account.scopes || []
     };
 
     chatMessages = [];
+    chatConnectionStatus = "Cuenta conectada. Elige un canal para intentar conectar su chat.";
     clearTimeout(tokenRefreshTimer);
     tokenRefreshTimer = setTimeout(
       refreshTwitchToken,
@@ -662,6 +671,7 @@ app.get("/api/messages", (req, res) => {
   res.json({
     connected: true,
     account: req.session.twitch.login,
+    chatStatus: chatConnectionStatus,
     selectedChannel: req.session.selectedChannel || null,
     messages: chatMessages
   });
