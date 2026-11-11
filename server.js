@@ -228,7 +228,7 @@ app.get("/", (req, res) => {
       <p id="status">Comprobando conexión...</p>
       <p><a href="/auth/twitch">Conectar con Twitch</a></p>
       <h2>Mensajes del chat</h2>
-      <p>La IA solo prepara borradores. Tú decides qué usar; no publica mensajes.</p>
+      <p>Modo actual: solo lee el chat de la cuenta Twitch conectada y prepara borradores privados. No publica mensajes ni puede leer otros canales sin los permisos de Twitch correspondientes.</p>
       <div id="messages">Esperando mensajes...</div>
       <h2>Mi forma de escribir</h2>
       <p>Añade ejemplos escritos por ti para orientar el estilo de las sugerencias.</p>
@@ -528,8 +528,15 @@ app.post("/api/suggest", async (req, res) => {
     });
     const data = await response.json();
     if (!response.ok) {
+      const apiCode = data.error?.code || data.error?.type || "";
       console.error("Error de OpenAI:", data.error?.message || response.status);
-      return res.status(502).json({ error: "No se pudo generar el borrador. Revisa la configuración de OpenAI." });
+      if (apiCode === "insufficient_quota" || apiCode === "billing_hard_limit_reached") {
+        return res.status(502).json({ error: "OpenAI no tiene créditos disponibles para la API. La persona adulta responsable de la cuenta debe revisar la facturación de la API." });
+      }
+      if (response.status === 401 || apiCode === "invalid_api_key") {
+        return res.status(502).json({ error: "La clave de OpenAI no es válida. Revisa OPENAI_API_KEY en Render sin compartirla aquí." });
+      }
+      return res.status(502).json({ error: "OpenAI no pudo generar el borrador. Revisa la configuración y el estado de la API." });
     }
     const suggestion = typeof data.output_text === "string" ? data.output_text.trim() : "";
     if (!suggestion) {
